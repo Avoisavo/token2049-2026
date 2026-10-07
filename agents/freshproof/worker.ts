@@ -10,7 +10,7 @@
 // inspection instead of paying twice.
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { required } from "../lib/config.ts";
+import { addressOf, BLOCKFROST_BASE_URL, required } from "../lib/config.ts";
 import { Journal, LOCAL_DIR, writeText } from "../lib/journal.ts";
 import { acquireLock } from "../lib/lock.ts";
 import { cli } from "../lib/sokosumi.ts";
@@ -81,11 +81,38 @@ function buy(order: Order): { code: number; output: string } {
   return { code: run.status ?? 1, output: stripAnsi(`${run.stdout ?? ""}${run.stderr ?? ""}`).trim() };
 }
 
-function report(order: Order, code: number, receipt: string): string {
-  const head =
-    code === 0
-      ? `FOR purchase: ${order.asset}/USD, max age ${order.window} s, ${order.price} USDM via x402 on Cardano Preprod.`
-      : `FOR purchase for ${order.asset}/USD did not complete. No further payment was attempted.`;
+// A facilitator timeout (e.g. HTTP 504) does not mean the payment was not
+// broadcast. When buy.mjs fails after signing, look the signed tx up in the
+// buyer's recent Preprod transactions before reporting.
+async function settledOnChain(receipt: string): Promise<string | undefined> {
+  const short = receipt.match(/payment signed by buyer wallet · [^·]+· ([0-9a-f]{6})…([0-9a-f]{4})/);
+  const mnemonic = process.env.FRESHPROOF_BUYER_MNEMONIC;
+  const projectId = process.env.BLOCKFROST_PROJECT_ID;
+  if (!short || !mnemonic || !projectId) return undefined;
+  const buyer = addressOf(mnemonic);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const response = await fetch(`${BLOCKFROST_BASE_URL}/addresses/${buyer}/transactions?order=desc&count=20`, {
+      headers: { project_id: projectId },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.ok) {
+      const txs = (await response.json()) as { tx_hash: string }[];
+      const hit = txs.find(t => t.tx_hash.startsWith(short[1]) && t.tx_hash.endsWith(short[2]));
+      if (hit) return hit.tx_hash;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10_000)); // indexer lag
+  }
+  return undefined;
+}
+
+async function report(order: Order, code: number, receipt: string): Promise<string> {
+  let head = `FOR purchase: ${order.asset}/USD, max age ${order.window} s, ${order.price} USDM via x402 on Cardano Preprod.`;
+  if (code !== 0) {
+    const tx = await settledOnChain(receipt);
+    head = tx
+      ? `${head}\nThe facilitator timed out, but the payment settled on Preprod: ${tx}\nhttps://preprod.cardanoscan.io/transaction/${tx}`
+      : `FOR purchase for ${order.asset}/USD did not complete, and its payment is not on Preprod. No further payment was attempted.`;
+  }
   return `${head}\n\n${receipt.slice(0, 900_000)}\n`;
 }
 
@@ -108,7 +135,7 @@ async function advance(scope: Scope, taskId: string, status: string) {
     } else {
       tasks.save(taskId, { ...state, order, phase: "buy-pending" });
       const { code, output } = buy(order);
-      writeText(resultFile(taskId), report(order, code, output));
+      writeText(resultFile(taskId), await report(order, code, output));
       state = tasks.save(taskId, { ...state, order, exitCode: code, phase: "result-saved" });
       console.log(`[${taskId}] buy.mjs exited ${code}`);
     }
