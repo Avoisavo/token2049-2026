@@ -13,7 +13,8 @@ export const COWORKER_ID = () => required("COWORKER_ID");
 function scope(kind: "tasks" | "runtime"): string[] {
   const orgId = process.env.SOKOSUMI_ORGANIZATION_ID?.trim();
   const orgSlug = process.env.SOKOSUMI_ORGANIZATION_SLUG?.trim();
-  if (!orgId && !orgSlug) return ["--personal"];
+  // `tasks list` has no --personal flag; unscoped, it lists personal Tasks.
+  if (!orgId && !orgSlug) return kind === "runtime" ? ["--personal"] : [];
   if (kind === "runtime") return ["--organization-id", required("SOKOSUMI_ORGANIZATION_ID")];
   return ["--organization-slug", required("SOKOSUMI_ORGANIZATION_SLUG")];
 }
