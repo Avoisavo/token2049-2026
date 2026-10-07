@@ -110,7 +110,6 @@ The REJECT hash belongs to the held payment that was dropped. Looking it up on t
 - **Buyer address:** `addr_test1qzhnpsdw63t0aj8uu6fg7svx37ndl3j3zs6nx20wgahft93d0epg8pk32wj325cam6jt8zmkxmaa3cw7ksalrg5wzsfsycveq0`
 - **USDM asset:** the Preprod USDM that `@x402/cardano` resolves for `$` prices: `e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`
 - **Receipt evidence:** each `buy.mjs` run prints the tx hash, an explorer link, the block and slot found through Blockfrost, and the buyer's tUSDM balance before and after.
-- **Screenshots:** `[add a screenshot of the APPROVE receipt and of the explorer page]`
 
 ## Run it
 
