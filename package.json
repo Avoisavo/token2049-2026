@@ -17,8 +17,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",
     "@scure/bip39": "2.4.0",
-    "@x402/cardano": "2.26.0",
-    "@x402/core": "2.26.0",
+    "@x402/cardano": "^2.28.0",
+    "@x402/core": "^2.28.0",
     "@x402/express": "2.26.0",
     "express": "4.22.3",
     "next": "16.4.0",
