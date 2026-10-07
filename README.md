@@ -14,7 +14,7 @@ FreshProof is a data marketplace where every purchase carries a **freshness prom
 
 - The buyer states how fresh the data must be, for example "an ETH price no more than 10 seconds old".
 - The seller is paid only if the delivery meets that promise.
-- If the delivery misses it, the buyer pays nothing.
+- **If the data is too old, or no data is delivered at all, the buyer gets a full refund.**
 
 ## Problem
 
@@ -33,8 +33,11 @@ Every purchase carries a freshness promise that is enforced at payment time:
 |---|---|
 | 1. Request | The buyer agent asks for a price with a maximum age (`maxAge`), e.g. ETH ≤ 10 s. |
 | 2. Pay | The seller answers HTTP `402 Payment Required`. The buyer signs a USDM payment on Cardano. The payment is **verified but held, not broadcast**. |
-| 3. Deliver | The marketplace fetches the latest trade and records its age at delivery. |
-| 4. Check | **Age ≤ maxAge** → the payment is broadcast and the seller is paid (`APPROVE`). **Age > maxAge** → the signed payment is dropped and the buyer is never charged (`REJECT`). |
+| 3. Deliver | The seller delivers the latest price, and its age at delivery is recorded. |
+| 4. Check | **Age ≤ maxAge** → the payment is broadcast and the seller is paid (`APPROVE`). |
+| 5. Refund | **Age > maxAge, or no data delivered** → the buyer is refunded in full (`REJECT`). |
+
+How the refund works today: the buyer's signed payment is held, never broadcast, until the check passes. On a miss or a failed delivery the held payment is dropped, so the USDM never leaves the buyer's wallet and nothing has to be sent back. In the Masumi escrow version (see the demo UI), the payment is locked in escrow first and released back to the buyer.
 
 Who it is for:
 
@@ -54,8 +57,7 @@ We do not insure trading losses. We make sellers accountable for delivery.
 | Stablecoin | Preprod **USDM** (test USDM), paid per query (default 0.1 USDM) |
 | Chain data | **Blockfrost** Preprod API: chain tip, transaction lookup, buyer balance before and after |
 | Price source | Coinbase Exchange API: latest trade with its timestamp, used to measure data age |
-| Marketplace | Node.js x402 resource server: [`.claude/skills/freshproof/market.mjs`](.claude/skills/freshproof/market.mjs) |
-| Buyer agent | Node.js CLI that signs with a buyer wallet and prints a receipt: [`.claude/skills/freshproof/buy.mjs`](.claude/skills/freshproof/buy.mjs); also usable as a Claude Code skill (`/freshproof`) |
+| Marketplace + buyer agent | Node.js CLI [`.claude/skills/freshproof/buy.mjs`](.claude/skills/freshproof/buy.mjs). It runs the x402 seller side (402 offer, verify, settle only on APPROVE) and the buyer wallet that signs, then prints a receipt. Also usable as a Claude Code skill (`/freshproof`). |
 | Demo UI | Next.js 16 + React 19 + Tailwind CSS 4: [`app/demo.tsx`](app/demo.tsx) |
 | Escrow design | Masumi escrow flow (fund → submit result → verdict), shown in the demo UI and the `--simulate` mode |
 
@@ -66,9 +68,9 @@ On-chain transactions from our demo runs on Cardano Preprod:
 | # | Run | Asset | Max age | Recorded age | Verdict | Amount | Tx hash |
 |---|---|---|---|---|---|---|---|
 | 1 | Fresh delivery | ETH/USD | 10 s | `[__ s]` | ✅ APPROVE, seller paid | 0.1 USDM | [`[tx hash]`](https://preprod.cardanoscan.io/transaction/[tx-hash]) |
-| 2 | Outdated delivery | ETH/USD | 0.000001 s | `[__ ms]` | ❌ REJECT, never broadcast | 0 USDM charged | `[signed tx hash]`: intentionally **not** on chain |
+| 2 | Outdated delivery | ETH/USD | 0.000001 s | `[__ ms]` | ❌ REJECT, buyer refunded | 0.1 USDM refunded | `[signed tx hash]`: intentionally **not** on chain |
 
-For the REJECT run, the hash belongs to the signed payment that was dropped. Looking it up on the explorer returns "not found", which is the proof that the buyer was never charged.
+For the REJECT run, the hash belongs to the held payment that was dropped. Looking it up on the explorer returns "not found", and the buyer's tUSDM balance is unchanged. That is the proof of the full refund.
 
 ## Proof of Cardano usage
 
@@ -96,12 +98,6 @@ npm run buy -- ETH --window 0.000001       # impossible promise → REJECT, neve
 npm run buy -- ETH --window 10 --simulate  # offline mock, no wallet needed
 ```
 
-Marketplace server (measures real data age from the latest Coinbase trade):
-
-```sh
-npm run market                             # http://localhost:4021/v1/price?asset=ETH&maxAge=10&price=0.1
-```
-
 Web demo:
 
 ```sh
@@ -115,7 +111,7 @@ Never commit `.env.local`: it holds the buyer wallet's mnemonic.
 - **Real on Preprod:**
   - the x402 payment: signed by the buyer, verified by the facilitator, broadcast only on APPROVE;
   - the on-chain lookup and the balance check.
-- **Measured vs. generated data age:** `market.mjs` measures age from the real trade timestamp. In `buy.mjs`'s standalone real mode the data age is generated for the demo, and the payment is real.
+- **Generated data age:** in `buy.mjs` the recorded data age is generated for the demo; the price, the payment and the refund behavior are real.
 - **Simulated:** the web UI and the `--simulate` CLI mode show the Masumi escrow version of the flow (fund → submit → verdict → release or refund) with mock hashes.
 - **Next step:** move the hold-and-check into Masumi escrow, so the freshness verdict also lives on chain.
 
