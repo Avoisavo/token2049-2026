@@ -12,8 +12,7 @@
     "job": "node agents/scripts/run-job.ts",
     "worker": "node agents/coworker/worker.ts",
     "typecheck:agents": "tsc -p agents/tsconfig.json",
-    "buy": "node --env-file-if-exists=.env.local .claude/skills/freshproof/buy.mjs",
-    "market": "node --env-file-if-exists=.env.local .claude/skills/freshproof/market.mjs"
+    "buy": "node --env-file-if-exists=.env.local .claude/skills/freshproof/buy.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",

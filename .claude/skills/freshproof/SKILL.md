@@ -6,18 +6,18 @@ argument-hint: "[ASSET] [--window SECONDS] [--price USDM] [--simulate]"
 
 # Freshproof: buy fresh data over x402 from the terminal
 
-Two pieces:
-- `market.mjs`: the marketplace. It's an x402 resource server: it returns 402, verifies the buyer's signed USDM payment through the hosted Preprod facilitator, checks freshness, and broadcasts the payment only if the check passes.
-- `buy.mjs`: the buyer. It signs the payment with the buyer wallet and prints the receipt.
+`buy.mjs` runs the whole flow in one process. The delivered data and its age are generated, as in the mock. The USDM payment is real x402 on Cardano Preprod:
+- the buyer wallet signs a payment to the seller
+- the hosted x402 facilitator verifies it
+- the payment is broadcast only if the freshness check passes; otherwise the signed tx is dropped
 
 ## Run
-
-1. Check the marketplace is up: `curl -s -o /dev/null -w "%{http_code}" "http://localhost:4021/v1/price"` should print `402`. If it doesn't, start it in the background with `npm run market` (it reads `.env.local`).
-2. Run the buyer (default `ETH --window 10 --price 0.1`):
 
 ```bash
 npm run buy -- $ARGUMENTS
 ```
+
+Defaults: `ETH --window 10 --price 0.1`. The script reads `.env.local`, which needs `FRESHPROOF_BUYER_MNEMONIC`, `BLOCKFROST_PROJECT_ID` and `FRESHPROOF_SELLER_ADDRESS`.
 
 Map natural language to flags:
 - asset: `AAVE`, `ETH`, `BTC`, `ADA`, `SOL` (first positional argument)
@@ -35,7 +35,7 @@ Bash output is not reliably shown to the user, so reproduce the result in your r
 1. The progress lines (✓ / ✕), as a short list.
 2. The whole receipt, from `request` to the final line, inside one fenced code block, exactly as printed.
 3. One sentence on the outcome:
-   - APPROVE: the settlement tx is real on Preprod. Give the explorer link the script printed.
-   - REJECT: the signed payment was never broadcast, so the buyer was never charged.
+   - APPROVE: the tx is on Preprod. Point to the receipt's `on-chain` row and the tUSDM balance drop, and give the explorer link.
+   - REJECT: the signed payment was never broadcast. The `on-chain` row says "not found" and the buyer's tUSDM is unchanged.
 
 A settlement can take up to about a minute, because the facilitator waits for the tx to be included in a block.

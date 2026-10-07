@@ -1,64 +1,124 @@
-# Token Due-Diligence Coworker (x402 agent-to-agent payments on Cardano)
+# FreshProof
 
-A Sokosumi Coworker that writes sourced due-diligence briefs on crypto tokens. To do the work it **hires another agent**: it buys market data from a specialist data agent and pays it over **x402** on Cardano preprod, from its own wallet.
+**Data purchases with an enforceable freshness promise, for AI agents, paid with x402 on Cardano.**
 
-Two payments, two protocols, one Task:
+Built for the TOKEN2049 Origins Hackathon, Agentic Payments on Cardano track.
 
-```
-Sokosumi buyer ──1 tUSDM, Masumi escrow (MPS)──▶ Due-diligence Coworker
-                                                     │ GET /v1/token-profile → 402
-                                                     │ signs 0.10 tUSDM, x402 "exact"
-                                                     ▼
-                                               Specialist data agent ──▶ CoinGecko data + sources
-                                                     │
-                     Claude writes the brief ◀───────┘
-Coworker submits result hash → completes Task → seller collects after unlock
-```
+---
 
-| Part | File | Role |
-|---|---|---|
-| Specialist data agent | [agents/specialist/server.ts](agents/specialist/server.ts) | x402 resource server. One token profile per payment, verified and settled by the hosted Cardano Foundation facilitator. A 4xx (unknown token, bad query) cancels settlement, so the buyer is not charged. |
-| x402 buyer | [agents/coworker/x402-buyer.ts](agents/coworker/x402-buyer.ts) | The Coworker's wallet. Saves the signed payment **before** sending it; after a crash it resends the same signed transaction. It signs a new one only after the old one has expired and is absent on chain. Spend cap 0.25 tUSDM. |
-| Brief writer | [agents/coworker/brief.ts](agents/coworker/brief.ts) | Claude (`claude-opus-5-5`) extracts the request, then writes the brief from the purchased data only, citing sources and listing gaps. |
-| Job | [agents/coworker/job.ts](agents/coworker/job.ts) | Request → purchase → brief. Each step is journaled, so a restart never pays or prompts twice. |
-| Worker | [agents/coworker/worker.ts](agents/coworker/worker.ts) | Polls Sokosumi Tasks for this Coworker. One worker per Coworker (lock file). |
-| Paid Task | [agents/coworker/paid-task.ts](agents/coworker/paid-task.ts), [settlement.ts](agents/coworker/settlement.ts) | MPS escrow flow: signed terms → `masumiPayment` → confirmed `FundsLocked` → job → result hash → completion → independent proof of seller collection. Ported from Masumi's verified demo. |
+## Intro
+
+AI agents increasingly buy data and act on it at machine speed. When an agent buys data today, it pays even if the data arrives too old to use.
+
+FreshProof is a data marketplace where every purchase carries a **freshness promise**:
+
+- The buyer states how fresh the data must be, for example "an ETH price no more than 10 seconds old".
+- The seller is paid only if the delivery meets that promise.
+- If the delivery misses it, the buyer pays nothing.
+
+## Problem
+
+- Gartner estimates poor data quality costs organizations an average of **$12.9 million a year**.
+- Juniper projects agentic commerce could reach **$1.5 trillion a year by 2030**.
+
+When agents spend real money at machine speed, outdated data becomes a financial risk. We focus on one specific failure: **buyers paying for data that arrives too old to use.**
+
+Example: an agent compares the Bitcoin price on two exchanges. One price is ten seconds old, and the opportunity is already gone. The seller still gets paid. The buyer carries the risk.
+
+## Solution
+
+Every purchase carries a freshness promise that is enforced at payment time:
+
+| Step | What happens |
+|---|---|
+| 1. Request | The buyer agent asks for a price with a maximum age (`maxAge`), e.g. ETH ≤ 10 s. |
+| 2. Pay | The seller answers HTTP `402 Payment Required`. The buyer signs a USDM payment on Cardano. The payment is **verified but held, not broadcast**. |
+| 3. Deliver | The marketplace fetches the latest trade and records its age at delivery. |
+| 4. Check | **Age ≤ maxAge** → the payment is broadcast and the seller is paid (`APPROVE`). **Age > maxAge** → the signed payment is dropped and the buyer is never charged (`REJECT`). |
+
+Who it is for:
+
+- **Buyers:** teams running crypto trading agents, who need automatic checks across thousands of data purchases.
+- **Sellers:** can charge more for tighter freshness promises.
+- **FreshProof:** earns a fee on successful transactions only.
+
+We do not insure trading losses. We make sellers accountable for delivery.
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Blockchain | **Cardano Preprod** testnet |
+| Payment protocol | **x402** (HTTP 402), `exact` scheme on `cardano:preprod`, via [`@x402/cardano`](https://www.npmjs.com/package/@x402/cardano) and `@x402/core` |
+| Facilitator | Cardano Foundation hosted Preprod facilitator, `https://x402.preprod.dev.ecosyseng.cf-deployments.org`: verifies the signed payment and broadcasts it only on settlement |
+| Stablecoin | Preprod **USDM** (test USDM), paid per query (default 0.1 USDM) |
+| Chain data | **Blockfrost** Preprod API: chain tip, transaction lookup, buyer balance before and after |
+| Price source | Coinbase Exchange API: latest trade with its timestamp, used to measure data age |
+| Marketplace | Node.js x402 resource server: [`.claude/skills/freshproof/market.mjs`](.claude/skills/freshproof/market.mjs) |
+| Buyer agent | Node.js CLI that signs with a buyer wallet and prints a receipt: [`.claude/skills/freshproof/buy.mjs`](.claude/skills/freshproof/buy.mjs); also usable as a Claude Code skill (`/freshproof`) |
+| Demo UI | Next.js 16 + React 19 + Tailwind CSS 4: [`app/demo.tsx`](app/demo.tsx) |
+| Escrow design | Masumi escrow flow (fund → submit result → verdict), shown in the demo UI and the `--simulate` mode |
+
+## Transactions
+
+On-chain transactions from our demo runs on Cardano Preprod:
+
+| # | Run | Asset | Max age | Recorded age | Verdict | Amount | Tx hash |
+|---|---|---|---|---|---|---|---|
+| 1 | Fresh delivery | ETH/USD | 10 s | `[__ s]` | ✅ APPROVE, seller paid | 0.1 USDM | [`[tx hash]`](https://preprod.cardanoscan.io/transaction/[tx-hash]) |
+| 2 | Outdated delivery | ETH/USD | 0.000001 s | `[__ ms]` | ❌ REJECT, never broadcast | 0 USDM charged | `[signed tx hash]`: intentionally **not** on chain |
+
+For the REJECT run, the hash belongs to the signed payment that was dropped. Looking it up on the explorer returns "not found", which is the proof that the buyer was never charged.
+
+## Proof of Cardano usage
+
+- **Settled payment on Preprod:** https://preprod.cardanoscan.io/transaction/[tx-hash]. It shows USDM moving from the buyer wallet to the seller address.
+- **Seller address:** `[addr_test1…]`
+- **Buyer address:** `[addr_test1…]`
+- **USDM asset:** the Preprod USDM that `@x402/cardano` resolves for `$` prices: `[policyId.assetName]`
+- **Receipt evidence:** each `buy.mjs` run prints the tx hash, an explorer link, the block and slot found through Blockfrost, and the buyer's tUSDM balance before and after.
+- **Screenshots:** `[add a screenshot of the APPROVE receipt and of the explorer page]`
 
 ## Run it
 
-Requirements: Node 24+, the Sokosumi CLI (`npm i -g @masumi_network/sokosumi`), a Blockfrost **preprod** project key, and an Anthropic API key.
+Requirements: Node.js 24+, a Blockfrost **Preprod** project ID, and a Preprod buyer wallet holding test ADA (for fees) and test USDM.
 
 ```sh
 npm install
-npm run wallets          # creates two preprod test wallets in .env.local, prints addresses
+cp .env.example .env.local   # fill in BLOCKFROST_PROJECT_ID, FRESHPROOF_BUYER_MNEMONIC, FRESHPROOF_SELLER_ADDRESS
 ```
 
-Add `BLOCKFROST_API_KEY_PREPROD` and `ANTHROPIC_API_KEY` to `.env.local` (see [.env.example](.env.example)). Fund the **buyer** wallet with test ADA and Masumi test USDM (policy `16a55b2a…`) from https://dispenser.masumi.network, and the **specialist** wallet with a little test ADA. Then:
+Terminal demo:
 
 ```sh
-npm run specialist                                       # terminal 1
-npm run job -- "Due diligence on SNEK for our treasury team"   # terminal 2: one local job, real x402 payment
+npm run buy -- ETH --window 10             # real x402 payment on Preprod → APPROVE, seller paid
+npm run buy -- ETH --window 0.000001       # impossible promise → REJECT, never charged
+npm run buy -- ETH --window 10 --simulate  # offline mock, no wallet needed
 ```
 
-Connect it to Sokosumi (see the [TOKEN2049 guide](https://www.masumi.network/token2049)), put `COWORKER_ID` in `.env.local`, then:
+Marketplace server (measures real data age from the latest Coinbase trade):
 
 ```sh
-npm run worker
+npm run market                             # http://localhost:4021/v1/price?asset=ETH&maxAge=10&price=0.1
 ```
 
-Paid Tasks: run the Masumi Payment Service, register the agent with `{"pricingType":"Dynamic"}`, save the registration to `.local/mps-registration.json`, set `MPS_RUNTIME_TOKEN` and `PAID_TASKS_ENABLED=true`.
+Web demo:
 
-Checks: `npm run typecheck:agents`.
+```sh
+npm run dev                                # http://localhost:3000
+```
 
-## Status
+Never commit `.env.local`: it holds the buyer wallet's mnemonic.
 
-Verified on 2026-10-07:
+## Status and limits
 
-- The specialist answers an unpaid request with HTTP 402 and a valid x402 v2 offer (`exact`, `cardano:preprod`, 100000 units of Masumi tUSDM).
-- The hosted facilitator advertises `exact` on preprod.
-- The data lookup returns sourced CoinGecko figures, and `found: false` for unknown tokens.
-- The agents code typechecks.
+- **Real on Preprod:**
+  - the x402 payment: signed by the buyer, verified by the facilitator, broadcast only on APPROVE;
+  - the on-chain lookup and the balance check.
+- **Measured vs. generated data age:** `market.mjs` measures age from the real trade timestamp. In `buy.mjs`'s standalone real mode the data age is generated for the demo, and the payment is real.
+- **Simulated:** the web UI and the `--simulate` CLI mode show the Masumi escrow version of the flow (fund → submit → verdict → release or refund) with mock hashes.
+- **Next step:** move the hold-and-check into Masumi escrow, so the freshness verdict also lives on chain.
 
-Not yet run: a funded x402 payment, a Claude call, a Sokosumi Task, MPS registration, and a paid Task with seller collection. Those need the keys, funding and accounts above.
+## Also in this repo
 
-State, results and keys live in `.local/` and `.env.local`, both git-ignored. Never commit them.
+[`agents/`](agents/) contains a Sokosumi Coworker that writes token due-diligence briefs. It buys market data from a specialist agent over x402 on Cardano Preprod (agent-to-agent payment), and handles paid Tasks through the Masumi Payment Service.
