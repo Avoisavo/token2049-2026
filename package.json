@@ -11,7 +11,8 @@
     "specialist": "node agents/specialist/server.ts",
     "job": "node agents/scripts/run-job.ts",
     "worker": "node agents/coworker/worker.ts",
-    "typecheck:agents": "tsc -p agents/tsconfig.json"
+    "typecheck:agents": "tsc -p agents/tsconfig.json",
+    "buy": "node .claude/skills/freshproof/buy.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",
