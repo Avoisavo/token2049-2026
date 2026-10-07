@@ -1,6 +1,6 @@
 # FreshProof
 
-**Data purchases with an enforceable freshness promise, for AI agents, paid with x402 on Cardano.**
+**A freshness guarantee for the data AI agents buy: if the data arrives late, the money never moves. Paid with x402 on Cardano.**
 
 Built for the TOKEN2049 Origins Hackathon, Agentic Payments on Cardano track.
 
@@ -8,44 +8,55 @@ Built for the TOKEN2049 Origins Hackathon, Agentic Payments on Cardano track.
 
 ## Intro
 
-AI agents increasingly buy data and act on it at machine speed. When an agent buys data today, it pays even if the data arrives too old to use.
+AI agents are becoming some of the busiest data buyers on the internet, and they buy at machine speed. A trading agent pulls a price, decides and trades within seconds. Today it pays for every query, whether the data was current or already out of date.
 
-FreshProof is a data marketplace where every purchase carries a **freshness promise**:
+FreshProof is a data marketplace where every purchase carries a **freshness promise that the payment itself enforces**:
 
 - The buyer states how fresh the data must be, for example "an ETH price no more than 10 seconds old".
-- The seller is paid only if the delivery meets that promise.
-- **If the data is too old, or no data is delivered at all, the buyer gets a full refund.**
+- The seller is paid only if the delivery keeps that promise.
+- **If the data is too old, or never arrives, the payment never settles. The buyer is not charged.**
 
-## Problem
+## Problem: agents pay for data they cannot use
 
-- Gartner estimates poor data quality costs organizations an average of **$12.9 million a year**.
-- Juniper projects agentic commerce could reach **$1.5 trillion a year by 2030**.
+Agentic commerce is projected to reach **$1.5 trillion a year by 2030** (Juniper Research). Bad data already costs the average organization **$12.9 million a year** (Gartner). Put the two together and you get software spending real money, at machine speed, on data that nobody guarantees.
 
-When agents spend real money at machine speed, outdated data becomes a financial risk. We focus on one specific failure: **buyers paying for data that arrives too old to use.**
+We focus on one specific, expensive failure: **data that arrives too old to use.**
 
-Example: an agent compares the Bitcoin price on two exchanges. One price is ten seconds old, and the opportunity is already gone. The seller still gets paid. The buyer carries the risk.
+> An agent compares the Bitcoin price on two exchanges. One price is ten seconds old. By the time the agent acts, the opportunity is gone. The seller still gets paid. The buyer carries the loss.
+
+For an agent there is no recourse. A stale API response has no refund button, no dispute window and nobody to call. At thousands of purchases a day, no human is watching either. Gartner predicts that **over 40% of agentic AI projects will be canceled by the end of 2027**, and names inadequate risk controls as one of the reasons. The payment rails for agents exist. **The recourse does not.**
+
+## Why recourse matters
+
+Recourse is the missing primitive of agentic commerce. Teams will not hand agents real budgets until a bad purchase can be undone automatically, by the payment itself and not by a support ticket.
+
+- **Bounded loss.** When a broken promise means the payment never settles, the worst case per query is a failed request, not lost money. That makes an agent's data budget something a team can actually approve.
+- **Freshness gets a price.** Sellers can charge more for tighter windows, and they forfeit the fee when they miss. Money flows toward faster feeds, and the premium for fresh data becomes an open, observable price instead of a private SLA.
+- **No trust required.** The buyer does not have to believe "trust me, it's fresh". Delivery is checked against the promise before any money moves.
 
 ## Solution
 
-Every purchase carries a freshness promise that is enforced at payment time:
+FreshProof turns the freshness promise into a **condition on the payment**:
 
 | Step | What happens |
 |---|---|
 | 1. Request | The buyer agent asks for a price with a maximum age (`maxAge`), e.g. ETH ≤ 10 s. |
-| 2. Pay | The seller answers HTTP `402 Payment Required`. The buyer signs a USDM payment on Cardano. The payment is **verified but held, not broadcast**. |
+| 2. Pay | The seller answers HTTP `402 Payment Required`. The buyer signs a USDM payment on Cardano. The x402 facilitator verifies it, and it is **held, not broadcast**. |
 | 3. Deliver | The seller delivers the latest price, and its age at delivery is recorded. |
-| 4. Check | **Age ≤ maxAge** → the payment is broadcast and the seller is paid (`APPROVE`). |
-| 5. Refund | **Age > maxAge, or no data delivered** → the buyer is refunded in full (`REJECT`). |
+| 4. Check | **Age ≤ maxAge** → the payment is broadcast and the seller is paid on-chain (`APPROVE`). |
+| 5. Void | **Age > maxAge, or nothing delivered** → the held payment is dropped (`REJECT`). The USDM never leaves the buyer's wallet, so there is nothing to claw back. |
 
-How the refund works today: the buyer's signed payment is held, never broadcast, until the check passes. On a miss or a failed delivery the held payment is dropped, so the USDM never leaves the buyer's wallet and nothing has to be sent back. In the Masumi escrow version (see the demo UI), the payment is locked in escrow first and released back to the buyer.
+**Both outcomes are live on Cardano Preprod.** A fresh ETH price (2.61 s old inside a 10 s window) settled 0.1 USDM to the seller in [`9d16bf3c…2810`](https://preprod.cardanoscan.io/transaction/9d16bf3c452448e2b71e965bfb1b0f63b0fbefa5c95a854dbe08ce0199212810). A request for data no older than 0.000001 s was refused. Its signed payment `acd1e1e7…097e` was never broadcast and the buyer's balance did not change.
+
+Today the hold-and-check runs in the FreshProof marketplace. The next step moves the verdict into Masumi escrow on Cardano, so that the contract itself enforces the promise.
 
 Who it is for:
 
 - **Buyers:** teams running crypto trading agents, who need automatic checks across thousands of data purchases.
-- **Sellers:** can charge more for tighter freshness promises.
+- **Sellers:** can charge more for tighter freshness promises, and earn a reputation for keeping them.
 - **FreshProof:** earns a fee on successful transactions only.
 
-We do not insure trading losses. We make sellers accountable for delivery.
+We do not insure trading losses. We make sellers accountable for delivery. When agents spend real money, "trust me, it's fresh" should be a promise they can enforce.
 
 ## Tech stack
 
@@ -63,21 +74,41 @@ We do not insure trading losses. We make sellers accountable for delivery.
 
 ## Transactions
 
-On-chain transactions from our demo runs on Cardano Preprod:
+Real runs of `npm run buy` on Cardano Preprod (buyer `addr_test1qzhn…ycveq0`, seller `addr_test1qpq3…a7gelc`):
 
-| # | Run | Asset | Max age | Recorded age | Verdict | Amount | Tx hash |
-|---|---|---|---|---|---|---|---|
-| 1 | Fresh delivery | ETH/USD | 10 s | `[__ s]` | ✅ APPROVE, seller paid | 0.1 USDM | [`[tx hash]`](https://preprod.cardanoscan.io/transaction/[tx-hash]) |
-| 2 | Outdated delivery | ETH/USD | 0.000001 s | `[__ ms]` | ❌ REJECT, buyer refunded | 0.1 USDM refunded | `[signed tx hash]`: intentionally **not** on chain |
+| # | Run | Asset | Max age | Recorded age | Verdict | USDM moved | Tx hash | On-chain |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Fresh delivery | ETH/USD | 10 s | 2.61 s | ✅ APPROVE, seller paid | 0.10 buyer → seller | [`9d16bf3c…2810`](https://preprod.cardanoscan.io/transaction/9d16bf3c452448e2b71e965bfb1b0f63b0fbefa5c95a854dbe08ce0199212810) | block 5,264,842 · slot 135,702,945 |
+| 2 | Outdated delivery | ETH/USD | 0.000001 s | 29.4 ms | ❌ REJECT, never charged | 0 | [`acd1e1e7…097e`](https://preprod.cardanoscan.io/transaction/acd1e1e77258cb77b26ab07e621cc20177493804bc44860c5f5ccbad436e097e) | not found: never broadcast |
 
-For the REJECT run, the hash belongs to the held payment that was dropped. Looking it up on the explorer returns "not found", and the buyer's tUSDM balance is unchanged. That is the proof of the full refund.
+**Run 1, APPROVE.** The payment settled on Preprod and the buyer's tUSDM dropped by exactly the query price:
+
+```
+┃ verdict               APPROVE · payment broadcast and included on Preprod
+┃ split                 seller 0.10 USDM → addr_test1qpq3…a7gelc
+┃ tx hash               9d16bf3c452448e2b71e965bfb1b0f63b0fbefa5c95a854dbe08ce0199212810
+┃ explorer              https://preprod.cardanoscan.io/transaction/9d16bf3c452448e2b71e965bfb1b0f63b0fbefa5c95a854dbe08ce0199212810
+┃ on-chain              found on Preprod · block 5,264,842 · slot 135,702,945
+┃ buyer tUSDM           1,999.70 → 1,999.60 · −0.10 paid to the seller
+```
+
+**Run 2, REJECT.** The buyer signed a real payment and the facilitator verified it. The data was 29.4 ms old against a 0.000001 s promise, so the payment was dropped instead of broadcast:
+
+```
+┃ verdict               REJECT · payment never broadcast
+┃ split                 buyer charged 0 · seller 0 · 0.10 USDM never left the buyer wallet
+┃ tx hash               acd1e1e77258cb77b26ab07e621cc20177493804bc44860c5f5ccbad436e097e
+┃ on-chain              not found on Preprod · never broadcast
+```
+
+The REJECT hash belongs to the held payment that was dropped. Looking it up on the explorer returns "not found", and the buyer's tUSDM balance is unchanged. That is the proof the buyer was never charged.
 
 ## Proof of Cardano usage
 
-- **Settled payment on Preprod:** https://preprod.cardanoscan.io/transaction/[tx-hash]. It shows USDM moving from the buyer wallet to the seller address.
-- **Seller address:** `[addr_test1…]`
-- **Buyer address:** `[addr_test1…]`
-- **USDM asset:** the Preprod USDM that `@x402/cardano` resolves for `$` prices: `[policyId.assetName]`
+- **Settled payment on Preprod:** https://preprod.cardanoscan.io/transaction/9d16bf3c452448e2b71e965bfb1b0f63b0fbefa5c95a854dbe08ce0199212810. It shows USDM moving from the buyer wallet to the seller address.
+- **Seller address:** `addr_test1qpq347fdfms0vr7r6l6p2mlg5r4a2q04qju20y2rsy2w3577q3ymekl5k62239yyqyn6elnmn3xqyxc8ujemcj9qkddqa7gelc`
+- **Buyer address:** `addr_test1qzhnpsdw63t0aj8uu6fg7svx37ndl3j3zs6nx20wgahft93d0epg8pk32wj325cam6jt8zmkxmaa3cw7ksalrg5wzsfsycveq0`
+- **USDM asset:** the Preprod USDM that `@x402/cardano` resolves for `$` prices: `e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`
 - **Receipt evidence:** each `buy.mjs` run prints the tx hash, an explorer link, the block and slot found through Blockfrost, and the buyer's tUSDM balance before and after.
 - **Screenshots:** `[add a screenshot of the APPROVE receipt and of the explorer page]`
 
