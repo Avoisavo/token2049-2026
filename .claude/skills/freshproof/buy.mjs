@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Freshproof terminal buyer: buy the latest price with a freshness promise over
+// FOR (Fresh Or Refund) terminal buyer: buy the latest price with a freshness promise over
 // x402 on Cardano Preprod, then print the receipt.
 //
 //   npm run buy -- ETH --window 10              # real x402 payment (seller paid)
@@ -99,7 +99,7 @@ function printReceipt(id, rows, finalLine) {
 
 function header(mode) {
   console.log();
-  console.log(bold(`Freshproof · buying latest ${assetId}/USD`) + dim(`  (Cardano Preprod · ${mode})`));
+  console.log(bold(`FOR (Fresh Or Refund) · buying latest ${assetId}/USD`) + dim(`  (Cardano Preprod · ${mode})`));
   console.log(dim(`  max age ${fmtLimit(windowSec)} · ${fmtAmt(amount)} USDM per query`));
   console.log();
 }

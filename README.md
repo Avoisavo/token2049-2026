@@ -1,4 +1,4 @@
-# FreshProof
+# FOR (Fresh Or Refund)
 
 **A freshness guarantee for the data AI agents buy: if the data arrives late, the money never moves. Paid with x402 on Cardano.**
 
@@ -10,7 +10,7 @@ Built for the TOKEN2049 Origins Hackathon, Agentic Payments on Cardano track.
 
 AI agents are becoming some of the busiest data buyers on the internet, and they buy at machine speed. A trading agent pulls a price, decides and trades within seconds. Today it pays for every query, whether the data was current or already out of date.
 
-FreshProof is a data marketplace where every purchase carries a **freshness promise that the payment itself enforces**:
+**FOR (Fresh Or Refund)** is a data marketplace where every purchase carries a **freshness promise that the payment itself enforces**:
 
 - The buyer states how fresh the data must be, for example "an ETH price no more than 10 seconds old".
 - The seller is paid only if the delivery keeps that promise.
@@ -36,7 +36,7 @@ Recourse is the missing primitive of agentic commerce. Teams will not hand agent
 
 ## Solution
 
-FreshProof turns the freshness promise into a **condition on the payment**:
+FOR turns the freshness promise into a **condition on the payment**:
 
 | Step | What happens |
 |---|---|
@@ -48,13 +48,13 @@ FreshProof turns the freshness promise into a **condition on the payment**:
 
 **Both outcomes are live on Cardano Preprod.** A fresh ETH price (2.61 s old inside a 10 s window) settled 0.1 USDM to the seller in [`9d16bf3c…2810`](https://preprod.cardanoscan.io/transaction/9d16bf3c452448e2b71e965bfb1b0f63b0fbefa5c95a854dbe08ce0199212810). A request for data no older than 0.000001 s was refused. Its signed payment `acd1e1e7…097e` was never broadcast and the buyer's balance did not change.
 
-Today the hold-and-check runs in the FreshProof marketplace. The next step moves the verdict into Masumi escrow on Cardano, so that the contract itself enforces the promise.
+Today the hold-and-check runs in the FOR marketplace. The next step moves the verdict into Masumi escrow on Cardano, so that the contract itself enforces the promise.
 
 Who it is for:
 
 - **Buyers:** teams running crypto trading agents, who need automatic checks across thousands of data purchases.
 - **Sellers:** can charge more for tighter freshness promises, and earn a reputation for keeping them.
-- **FreshProof:** earns a fee on successful transactions only.
+- **FOR:** earns a fee on successful transactions only.
 
 We do not insure trading losses. We make sellers accountable for delivery. When agents spend real money, "trust me, it's fresh" should be a promise they can enforce.
 

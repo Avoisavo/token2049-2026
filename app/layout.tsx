@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Freshproof",
+  title: "FOR (Fresh Or Refund)",
   description: "Data marketplace with enforceable freshness promises",
 };
 

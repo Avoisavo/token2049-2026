@@ -238,7 +238,8 @@ export default function Demo() {
           Cardano Preprod · Masumi escrow · USDM
         </div>
         <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 sm:text-4xl">
-          Freshproof
+          FOR{" "}
+          <span className="text-zinc-400">(Fresh Or Refund)</span>
         </h1>
         <p className="mt-2 max-w-xl text-zinc-500">
           A data marketplace where every purchase carries an enforceable

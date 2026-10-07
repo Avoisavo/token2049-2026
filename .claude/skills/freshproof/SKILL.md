@@ -1,10 +1,10 @@
 ---
 name: freshproof
-description: Buy the latest crypto price (ETH, BTC, ADA, SOL, AAVE) through the Freshproof data marketplace with an enforceable freshness promise, paid with x402 on Cardano Preprod, and show the receipt in the terminal. Use when the user asks to buy/get the latest price with a freshness window, runs /freshproof, or wants the paid (APPROVE) or voided (REJECT) demo in the command line.
+description: Buy the latest crypto price (ETH, BTC, ADA, SOL, AAVE) through the FOR (Fresh Or Refund) data marketplace with an enforceable freshness promise, paid with x402 on Cardano Preprod, and show the receipt in the terminal. Use when the user asks to buy/get the latest price with a freshness window, runs /freshproof, or wants the paid (APPROVE) or voided (REJECT) demo in the command line.
 argument-hint: "[ASSET] [--window SECONDS] [--price USDM] [--simulate]"
 ---
 
-# Freshproof: buy fresh data over x402 from the terminal
+# FOR (Fresh Or Refund): buy fresh data over x402 from the terminal
 
 `buy.mjs` runs the whole flow in one process. The delivered data and its age are generated, as in the mock. The USDM payment is real x402 on Cardano Preprod:
 - the buyer wallet signs a payment to the seller
