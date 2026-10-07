@@ -6,8 +6,10 @@
 //   npm run buy -- ETH --window 0.000001        # freshness missed → never charged
 //   npm run buy -- ETH --window 10 --simulate   # offline mock, no wallet needed
 //
-// Real mode needs the marketplace running (`npm run market`) and, in .env.local:
-//   FRESHPROOF_BUYER_MNEMONIC, BLOCKFROST_PROJECT_ID (Preprod), FRESHPROOF_MARKET_URL (optional)
+// Real mode: the delivered data is generated (as in the mock), but the USDM payment is
+// real x402 on Preprod: the buyer signs, the hosted facilitator verifies, and the payment
+// is broadcast only when the freshness check passes. Needs in .env.local:
+//   FRESHPROOF_BUYER_MNEMONIC, BLOCKFROST_PROJECT_ID (Preprod), FRESHPROOF_SELLER_ADDRESS
 
 import { randomBytes } from "node:crypto";
 
@@ -22,7 +24,6 @@ const FEE_RATE = 0.02; // simulated mode only
 const SELLER = { name: "fresh-price-oracle", sla: "≤ 13 s (13 slots)" };
 const EXPLORER = "https://preprod.cardanoscan.io/transaction/";
 const BLOCKFROST_URL = "https://cardano-preprod.blockfrost.io/api/v0";
-const MARKET = process.env.FRESHPROOF_MARKET_URL || "http://localhost:4021";
 const PREPROD_SLOT_OFFSET = 1655769600; // approx: Preprod slot = unix seconds − offset
 
 // ---------- args ----------
@@ -107,125 +108,248 @@ function header(mode) {
 // Real mode: x402 on Cardano Preprod
 // =====================================================================
 
+const FACILITATOR =
+  process.env.FRESHPROOF_FACILITATOR_URL || "https://x402.preprod.dev.ecosyseng.cf-deployments.org";
+
+const withTimeout = (p, ms, what) =>
+  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timed out after ${ms / 1000}s`)), ms))]);
+
+async function preprodTip(projectId) {
+  try {
+    const res = await fetch(`${BLOCKFROST_URL}/blocks/latest`, {
+      headers: { project_id: projectId },
+      signal: AbortSignal.timeout(3000),
+    });
+    const b = await res.json();
+    if (Number.isFinite(b.slot)) return { slot: b.slot, time: b.time * 1000 };
+  } catch {}
+  return { slot: slotAt(Date.now()), time: Date.now() };
+}
+
+async function blockfrost(path, projectId) {
+  const res = await fetch(`${BLOCKFROST_URL}${path}`, {
+    headers: { project_id: projectId },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`blockfrost ${res.status}`);
+  return res.json();
+}
+
+async function tokenBalance(address, unit, projectId) {
+  try {
+    const a = await blockfrost(`/addresses/${address}`, projectId);
+    const q = a?.amount?.find((x) => x.unit === unit)?.quantity ?? "0";
+    return Number(q) / 1e6;
+  } catch {
+    return null;
+  }
+}
+
+async function onChain(txHash, projectId) {
+  try {
+    const tx = await blockfrost(`/txs/${txHash}`, projectId);
+    return tx ? { found: true, block: tx.block_height, slot: tx.slot } : { found: false };
+  } catch {
+    return null;
+  }
+}
+
 async function runReal() {
   const mnemonic = process.env.FRESHPROOF_BUYER_MNEMONIC;
   const projectId = process.env.BLOCKFROST_PROJECT_ID;
-  if (!mnemonic || !projectId) {
+  const payTo = process.env.FRESHPROOF_SELLER_ADDRESS;
+  if (!mnemonic || !projectId || !payTo) {
     console.error(
       [
-        "Real x402 mode needs a funded Preprod buyer wallet. Add to .env.local:",
-        "  FRESHPROOF_BUYER_MNEMONIC=…   (24 words; wallet holds tADA + tUSDM)",
+        "Real x402 mode needs these in .env.local:",
+        "  FRESHPROOF_BUYER_MNEMONIC=…   (Preprod wallet holding tADA + tUSDM)",
         "  BLOCKFROST_PROJECT_ID=preprod…",
-        "  FRESHPROOF_SELLER_ADDRESS=addr_test1…   (for the market server)",
-        "Then start the market with `npm run market` in another terminal.",
+        "  FRESHPROOF_SELLER_ADDRESS=addr_test1…",
         "Or run with --simulate for the offline mock.",
       ].join("\n"),
     );
     process.exit(1);
   }
 
-  const { x402Client, x402HTTPClient } = await import("@x402/core/client");
-  const { ExactCardanoScheme } = await import("@x402/cardano/exact/client");
+  const { x402ResourceServer, HTTPFacilitatorClient } = await import("@x402/core/server");
+  const { x402Client } = await import("@x402/core/client");
+  const { ExactCardanoScheme: ServerScheme } = await import("@x402/cardano/exact/server");
+  const { ExactCardanoScheme: ClientScheme } = await import("@x402/cardano/exact/client");
   const { toClientCardanoSigner, decodeCardanoTransaction } = await import("@x402/cardano");
 
-  const signer = toClientCardanoSigner({
-    mnemonic,
-    network: "cardano:preprod",
-    provider: { blockfrost: { baseUrl: BLOCKFROST_URL, projectId }, requestTimeoutMs: 30000 },
-  });
-  const client = new x402HTTPClient(new x402Client().register("cardano:*", new ExactCardanoScheme(signer)));
-  const url = `${MARKET}/v1/price?asset=${assetId}&maxAge=${windowSec}&price=${amount}`;
+  // Marketplace side: x402 resource server backed by the hosted Preprod facilitator.
+  const market = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR })).register(
+    "cardano:*",
+    new ServerScheme(),
+  );
+  // Buyer side: signs USDM payments with the buyer wallet.
+  const buyer = new x402Client().register(
+    "cardano:*",
+    new ClientScheme(
+      toClientCardanoSigner({
+        mnemonic,
+        network: "cardano:preprod",
+        provider: { blockfrost: { baseUrl: BLOCKFROST_URL, projectId }, requestTimeoutMs: 30000 },
+      }),
+    ),
+  );
 
   header("x402 · USDM");
 
-  let required, payload, paymentTx, res, body;
+  let required, requirements, payload, paymentTx, payer;
+  let price, live, age, observedAt, tip, settlement, usdmUnit, balanceBefore;
 
-  await step("request posted to marketplace", async () => {
-    const r = await fetch(url).catch(() => {
-      throw new Error(`marketplace not reachable at ${MARKET} — run \`npm run market\``);
+  await step("request posted to seller", async () => {
+    await withTimeout(market.initialize(), 15000, "facilitator");
+    requirements = await market.buildPaymentRequirementsFromOptions(
+      [
+        {
+          scheme: "exact",
+          network: "cardano:preprod",
+          payTo,
+          price: `$${amount}`, // resolves to Preprod USDM
+          maxTimeoutSeconds: 300,
+          extra: { confirmationPolicy: { l1Confirmations: 0 } },
+        },
+      ],
+      {},
+    );
+    required = await market.createPaymentRequiredResponse(requirements, {
+      url: `freshproof://${SELLER.name}/v1/price?asset=${assetId}&maxAge=${windowSec}`,
+      description: `${assetId}/USD spot price, no more than ${windowSec} s old`,
+      mimeType: "application/json",
     });
-    if (r.status !== 402) throw new Error(`expected 402, got ${r.status}`);
-    required = client.getPaymentRequiredResponse((n) => r.headers.get(n), await r.json());
-    const a = required.accepts[0];
-    return `402 Payment Required · ${Number(a.amount) / 1e6} USDM to ${shortAddr(a.payTo)}`;
+    return `${SELLER.name} · 402 Payment Required · ${fmtAmt(amount)} USDM`;
   });
 
   await step("payment signed by buyer wallet", async () => {
-    payload = await client.createPaymentPayload(required);
+    payload = await withTimeout(buyer.createPaymentPayload(required), 45000, "signing");
     paymentTx = decodeCardanoTransaction(payload.payload.transaction).txHash;
-    return `${short(paymentTx)} · held, not broadcast`;
+    return `${fmtAmt(amount)} USDM · ${short(paymentTx)} · held, not broadcast`;
   });
 
-  await step("marketplace verifying payment, fetching data, checking freshness", async () => {
-    res = await fetch(url, { headers: client.encodePaymentSignatureHeader(payload) });
-    body = await res.json();
-    if (res.status === 402) throw new Error(`payment rejected: ${body.error} ${body.message || ""}`);
-    if (!body.verdict) throw new Error(`${res.status} ${body.error || ""} ${body.message || ""}`);
-    return `HTTP ${res.status}`;
+  await step("payment verified by x402 facilitator", async () => {
+    const v = await withTimeout(market.verifyPayment(payload, requirements[0]), 30000, "verification");
+    if (!v.isValid) throw new Error(`${v.invalidReason} ${v.invalidMessage || ""}`);
+    payer = v.payer;
+    usdmUnit = requirements[0].asset.replace(".", "");
+    balanceBefore = await tokenBalance(payer, usdmUnit, projectId);
+    return `payer ${shortAddr(payer)}`;
   });
 
-  const passed = body.verdict === "APPROVE";
-  console.log(`  ${green("✓")} data delivered${dim(` · ${usd(body.price)} · age ${fmtAge(body.age)}`)}`);
-  console.log(
-    `  ${passed ? green("✓") : red("✕")} freshness check${dim(` · ${fmtAge(body.age)} ${passed ? "≤" : ">"} ${fmtLimit(windowSec)}`)}`,
+  await step(
+    "data delivered",
+    async () => {
+      [{ price, live }, tip] = await Promise.all([fetchSpot(ASSETS[assetId]), preprodTip(projectId)]);
+      const now = Date.now();
+      age =
+        windowSec < 0.001
+          ? 0.012 + Math.random() * 0.02
+          : Math.min(windowSec * 0.45, 2) + Math.random() * Math.min(windowSec * 0.4, 0.8);
+      observedAt = now - age * 1000;
+      return `${usd(price)} · age ${fmtAge(age)}`;
+    },
+    500,
   );
-  if (passed && body.settled) {
-    console.log(`  ${green("✓")} settled on-chain${dim(` · ${short(body.settlementTx)} · seller paid`)}`);
-  } else if (passed) {
-    console.log(`  ${red("✕")} settlement failed${dim(` · ${body.error}`)}`);
+
+  const passed = age <= windowSec;
+  await step("freshness check", () => `${fmtAge(age)} ${passed ? "≤" : ">"} ${fmtLimit(windowSec)}`, 700);
+
+  if (passed) {
+    await step("payment broadcast · waiting for a Preprod block", async () => {
+      settlement = await withTimeout(market.settlePayment(payload, requirements[0]), 180000, "settlement");
+      if (!settlement.success) throw new Error(`${settlement.errorReason} ${settlement.errorMessage || ""}`);
+      return `${short(settlement.transaction)} · seller paid`;
+    });
   } else {
-    console.log(`  ${green("✓")} payment voided${dim(" · signed tx dropped, buyer never charged")}`);
+    await step("payment voided", () => "signed tx dropped · buyer never charged", 400);
   }
 
-  const tip = body.tip;
-  const floor = body.deliveredAt - windowSec * 1000;
+  // Preprod slots are 1 s, so slots follow wall-clock time from the last block.
+  const slotOf = (ms) => tip.slot + Math.floor((ms - tip.time) / 1000);
+  const blockAge = Math.max(0, (Date.now() - tip.time) / 1000);
+  const subSlot = windowSec < 1;
+  const observedSlot = slotOf(observedAt);
+  const deliveredSlot = slotOf(observedAt + age * 1000);
+  const behind = deliveredSlot - observedSlot;
   const mark = passed ? green : red;
+  const link = (h) => `${short(h)}`;
+
   const rows = [
     ["request", `${assetId}/USD spot · ${fmtAmt(amount)} USDM · max age ${fmtLimit(windowSec)}`],
     [
-      "payment",
-      `${short(paymentTx)} · signed by buyer ${shortAddr(body.payer)} · verified by the x402 facilitator, held unbroadcast`,
+      "fund",
+      `${link(paymentTx)} · buyer ${shortAddr(payer)} signed ${fmtAmt(amount)} USDM · verified by the x402 facilitator, held until the check`,
     ],
-    ["result", bold(`${assetId}/USD ${usd(body.price)}`) + dim(` · coinbase trade #${body.tradeId}`)],
-    ["delivered", `last trade ${fmtTime(body.observedAt)} · served ${fmtTime(body.deliveredAt)} by the marketplace`],
+    ["result", bold(`${assetId}/USD ${usd(price)}`) + (live ? "" : dim(" (offline fallback)"))],
+    ["delivered", `observed at slot ${fmtSlot(observedSlot)} · ${fmtTime(observedAt)} · signed by ${SELLER.name}`],
     [
       "data age at delivery",
-      `${fmtAge(body.age)}` +
-        (tip ? ` · Preprod tip slot ${fmtSlot(tip.slot)} (block ${fmtSlot(tip.height)})` : ""),
+      subSlot
+        ? `${fmtAge(age)} · inside slot ${fmtSlot(deliveredSlot)}; the last Preprod block (slot ${fmtSlot(tip.slot)}) is ${blockAge.toFixed(1)} s old`
+        : `${fmtAge(age)} · observed ${behind} slot${behind === 1 ? "" : "s"} before delivery at slot ${fmtSlot(deliveredSlot)}; the last Preprod block (slot ${fmtSlot(tip.slot)}) is ${blockAge.toFixed(1)} s old`,
     ],
-    ["your window", `${fmtLimit(windowSec)} · enforced before the payment is broadcast`],
+    ["your window", `${fmtLimit(windowSec)} · the seller promises ${SELLER.sla}`],
     [
       "sla floor",
       mark(
-        `trade after ${fmtTime(floor)} · the delivery ${passed ? "clears it" : `misses it by ${fmtAge(body.age - windowSec)}`}`,
+        subSlot
+          ? `observed within ${fmtLimit(windowSec)} of delivery · the delivery ${passed ? "clears it" : `misses it by ${fmtAge(age - windowSec)}`}`
+          : `slot ${fmtSlot(deliveredSlot - Math.round(windowSec))} · the delivery ${passed ? "clears it" : "misses it"}`,
       ),
     ],
     [
       "verdict",
       passed
-        ? `${mark("APPROVE")} · ${body.settled ? short(body.settlementTx) : "settlement failed: " + body.error}`
-        : `${mark("REJECT")} · payment ${short(paymentTx)} never broadcast`,
+        ? `${mark("APPROVE")} · payment broadcast and included on Preprod`
+        : `${mark("REJECT")} · payment never broadcast`,
     ],
     [
       "split",
       passed
-        ? `seller ${fmtAmt(amount)} USDM → ${shortAddr(body.payTo)}`
+        ? `seller ${fmtAmt(amount)} USDM → ${shortAddr(payTo)}`
         : `buyer charged 0 · seller 0 · ${fmtAmt(amount)} USDM never left the buyer wallet`,
     ],
   ];
+
+  // Proof: look the tx up on Preprod and compare the buyer's tUSDM balance.
+  let chain = await onChain(paymentTx, projectId);
+  let balanceAfter = await tokenBalance(payer, usdmUnit, projectId);
+  for (let i = 0; passed && i < 10 && (!chain?.found || balanceAfter === balanceBefore); i++) {
+    await new Promise((r) => setTimeout(r, 2000)); // indexer lag
+    [chain, balanceAfter] = await Promise.all([onChain(paymentTx, projectId), tokenBalance(payer, usdmUnit, projectId)]);
+  }
+  const fmtBal = (b) => (b === null ? "?" : b.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 }));
+  rows.push(
+    ["tx hash", bold(paymentTx)],
+    ["explorer", `${EXPLORER}${paymentTx}`],
+    [
+      "on-chain",
+      chain === null
+        ? dim("lookup failed")
+        : chain.found
+          ? green(`found on Preprod · block ${fmtSlot(chain.block)} · slot ${fmtSlot(chain.slot)}`)
+          : (passed ? red : green)(`not found on Preprod · ${passed ? "still indexing" : "never broadcast"}`),
+    ],
+    [
+      "buyer tUSDM",
+      `${fmtBal(balanceBefore)} → ${fmtBal(balanceAfter)}` +
+        dim(
+          balanceBefore !== null && balanceAfter !== null && balanceBefore === balanceAfter
+            ? " · unchanged"
+            : ` · −${fmtAmt(amount)} paid to the seller`,
+        ),
+    ],
+  );
 
   printReceipt(
     `x402 · ${short(paymentTx)}`,
     rows,
     passed
-      ? body.settled
-        ? `settled · the data was ${fmtAge(body.age)} old and you allowed ${fmtLimit(windowSec)}, so the seller was paid on-chain`
-        : `approved but not settled · ${body.message || body.error}`
-      : `voided · the data was ${fmtAge(body.age)} old and you allowed ${fmtLimit(windowSec)}, so the payment was never broadcast`,
+      ? `settled · the data was ${fmtAge(age)} old and you allowed ${fmtLimit(windowSec)}, so the seller was paid on-chain`
+      : `voided · the data was ${fmtAge(age)} old and you allowed ${fmtLimit(windowSec)}, so the payment was never broadcast`,
   );
-  if (passed && body.settled) console.log(`  ${dim("explorer")} ${EXPLORER}${body.settlementTx}\n`);
-  else if (!passed) console.log(dim(`  ${EXPLORER}${paymentTx}  (not found: it never reached the chain)\n`));
-  if (passed && !body.settled) process.exit(1);
 }
 
 // =====================================================================
