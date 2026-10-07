@@ -8,7 +8,7 @@ const client = () => (anthropic ??= new Anthropic());
 
 // Server-side refusal fallback: a declined request is re-run on Anthropic's
 // recommended fallback model inside the same call.
-const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" } as const;
+const FALLBACK = { betas: ["server-side-fallback-2026-07-01"] as Anthropic.Beta.AnthropicBeta[], fallbacks: "default" as const };
 
 function text(message: Anthropic.Beta.BetaMessage): string {
   if (message.stop_reason === "refusal") throw new Error(`Model declined the request (${message.stop_details?.category ?? "no category"})`);
